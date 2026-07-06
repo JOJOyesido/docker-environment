@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+help() {
+    cat <<HELP
+
+eman help
+    Show this help message.
+
+eman check-verilator
+    Print the version of the first found Verilator.
+
+eman verilator-example
+    Compile and run the Verilator example.
+
+eman change-verilator <VERSION>
+    Change default Verilator to different version.
+    If not installed, install it from source.
+
+eman c-compiler-version
+    Print the version of default C compiler, C++ compiler, and GNU Make.
+
+eman c-compiler-example
+    Compile and run the C/C++ example.
+
+Aliases:
+    eman verilator
+        Same as eman verilator-example
+
+    eman c-compiler
+        Same as eman c-compiler-example
+
+HELP
+}
+
+check_command() {
+    if ! command -v "$1" > /dev/null 2>&1; then
+        echo "[ERROR] Command not found: $1"
+        exit 1
+    fi
+}
+
+c_compiler_version() {
+    check_command gcc
+    check_command g++
+    check_command make
+
+    echo "[INFO] gcc:"
+    gcc --version | head -n 1
+
+    echo
+    echo "[INFO] g++:"
+    g++ --version | head -n 1
+
+    echo
+    echo "[INFO] make:"
+    make --version | head -n 1
+}
+
+c_compiler_example() {
+    check_command gcc
+    check_command make
+
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "${tmpdir}"' EXIT
+
+    cd "${tmpdir}"
+
+    cat > main.c <<'SRC'
+#include <stdio.h>
+
+int main() {
+    int arr[2][3][4] = {
+        {
+            {1, 2, 3, 4},
+            {5, 6, 7, 8},
+            {9, 10, 11, 12}
+        },
+        {
+            {13, 14, 15, 16},
+            {17, 18, 19, 20},
+            {21, 22, 23, 24}
+        }
+    };
+
+    int *ptr = (int*)arr;
+
+    printf("-----  print out  ----- \n");
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 4; k++) {
+                int idx = i * 12 + j * 4 + k;
+                printf("addr: %p , value: %d\n",
+                       (void *)&arr[i][j][k],
+                       *(ptr + idx));
+            }
+        }
+    }
+
+    return 0;
+}
+SRC
+
+    cat > Makefile <<'MK'
+BIN := main.exe
+CC := gcc
+CFLAGS := -Wall -Wextra -O2
+INCLUDE_DIR := .
+SRC := main.c
+OBJ := $(SRC:.c=.o)
+
+.PHONY: all run clean
+
+all: $(BIN) run
+
+$(BIN): $(OBJ)
+	$(CC) $^ -o $@
+
+%.o: %.c
+	$(CC) -c $(CFLAGS) $< -I$(INCLUDE_DIR) -o $@
+
+run: $(BIN)
+	./$(BIN)
+
+clean:
+	rm -rf $(BIN) $(OBJ)
+MK
+
+    echo "[INFO] Building and running C compiler example..."
+    make
+    echo
+    echo "[INFO] C compiler example passed."
+}
+
+check_verilator() {
+    check_command verilator
+
+    echo "[INFO] Verilator path:"
+    command -v verilator
+
+    echo
+    echo "[INFO] Verilator version:"
+    verilator --version
+}
+
+verilator_example() {
+    check_command verilator
+    check_command make
+    check_command g++
+
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "${tmpdir}"' EXIT
+
+    cd "${tmpdir}"
+
+    cat > Counter.v <<'VERILOG'
+module Counter(
+    input clk,
+    input rst,
+    input [8:0] max,
+    output reg [8:0] out
+);
+    reg [8:0] cnt;
+
+    always @(posedge clk, posedge rst) begin
+        if (rst) cnt <= max;
+        else if (cnt == 0) cnt <= max;
+        else cnt <= cnt - 1;
+    end
+
+    always @(*) out = cnt;
+
+endmodule
+VERILOG
+
+    cat > testbench.cc <<'CPP'
+#include <iostream>
+#include "VCounter.h"
+#include "verilated_vcd_c.h"
+
+int main() {
+    Verilated::traceEverOn(true);
+    VerilatedVcdC* fp = new VerilatedVcdC();
+
+    auto dut = new VCounter;
+    dut->trace(fp, 0);
+    fp->open("wave.vcd");
+
+    int clk = 0;
+    const int maxclk = 10;
+
+    dut->rst = 1;
+    dut->max = 9;
+    dut->clk = 1;
+    dut->eval();
+    fp->dump(clk++);
+
+    dut->rst = 0;
+    while (clk < maxclk << 1) {
+        dut->clk = 0;
+        dut->eval();
+        fp->dump(clk++);
+
+        dut->clk = 1;
+        dut->eval();
+        fp->dump(clk++);
+
+        std::cout << "count: " << dut->out << std::endl;
+    }
+
+    fp->close();
+    dut->final();
+    delete dut;
+    delete fp;
+    return 0;
+}
+CPP
+
+    cat > Makefile <<'MK'
+TB_SRC = testbench.cc
+BIN = obj_dir/VCounter
+
+VFLAGS = -Wall --cc --exe --build --trace
+VC = verilator
+
+.PHONY: all clean format run
+
+all: $(BIN)
+
+run: $(BIN)
+	./$<
+
+obj_dir/V%: %.v $(TB_SRC)
+	$(VC) $(VFLAGS) $^
+
+format:
+	clang-format -i *.cc
+
+clean:
+	$(RM) -rv obj_dir *.vcd
+MK
+
+    echo "[INFO] Building Verilator example..."
+    make
+
+    echo
+    echo "[INFO] Running Verilator example..."
+    make run
+
+    echo
+    echo "[INFO] Verilator example passed."
+}
+
+change_verilator() {
+    version="${1:-}"
+
+    if [[ -z "${version}" ]]; then
+        echo "[ERROR] Missing version."
+        echo "Usage:"
+        echo "  eman change-verilator <VERSION>"
+        echo
+        echo "Example:"
+        echo "  eman change-verilator 5.026"
+        exit 1
+    fi
+
+    target="/opt/verilator-${version}"
+
+    if [[ -x "${target}/bin/verilator" ]]; then
+        echo "[INFO] Verilator ${version} is already installed at ${target}."
+    else
+        echo "[INFO] Installing Verilator ${version} from source..."
+
+        check_command git
+        check_command autoconf
+        check_command make
+        check_command g++
+
+        tmpdir="$(mktemp -d)"
+        trap 'rm -rf "${tmpdir}"' EXIT
+
+        git clone --depth 1 --branch "v${version}" \
+            https://github.com/verilator/verilator.git \
+            "${tmpdir}/verilator"
+
+        cd "${tmpdir}/verilator"
+
+        autoconf
+        ./configure --prefix="${target}"
+        make -j"$(nproc)"
+        sudo make install
+    fi
+
+    if [[ -d /opt/verilator && ! -L /opt/verilator ]]; then
+        echo "[INFO] Moving current /opt/verilator to /opt/verilator-default"
+        sudo mv /opt/verilator /opt/verilator-default
+    fi
+
+    echo "[INFO] Switching /opt/verilator to ${target}"
+    sudo ln -sfn "${target}" /opt/verilator
+
+    echo
+    echo "[INFO] Current Verilator:"
+    /opt/verilator/bin/verilator --version
+}
+
+command_name="${1:-help}"
+
+case "${command_name}" in
+    help|-h|--help)
+        help
+        ;;
+
+    c-compiler-version)
+        c_compiler_version
+        ;;
+
+    c-compiler-example|c-compiler)
+        c_compiler_example
+        ;;
+
+    check-verilator)
+        check_verilator
+        ;;
+
+    verilator-example|verilator)
+        verilator_example
+        ;;
+
+    change-verilator)
+        shift
+        change_verilator "${1:-}"
+        ;;
+
+    *)
+        echo "[ERROR] Unknown command: ${command_name}"
+        echo
+        help
+        exit 1
+        ;;
+esac
