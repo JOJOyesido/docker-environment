@@ -10,8 +10,8 @@ FROM ubuntu:26.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG USERNAME=aoc
-ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_UID=10001
+ARG USER_GID=10001
 
 ENV DEBIAN_FRONTEND=${DEBIAN_FRONTEND}
 ENV TZ=Asia/Taipei
@@ -26,12 +26,21 @@ RUN apt-get update && \
         ca-certificates && \
     ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
     echo ${TZ} > /etc/timezone && \
-    groupadd --gid ${USER_GID} ${USERNAME} && \
-    useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} && \
+    if getent group ${USER_GID} > /dev/null; then \
+        echo "[INFO] GID ${USER_GID} already exists, reuse it."; \
+    else \
+        groupadd --gid ${USER_GID} ${USERNAME}; \
+    fi && \
+    if getent passwd ${USER_UID} > /dev/null; then \
+        echo "[ERROR] UID ${USER_UID} already exists. Please use another USER_UID."; \
+        exit 1; \
+    else \
+        useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME}; \
+    fi && \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} && \
     chmod 0440 /etc/sudoers.d/${USERNAME} && \
     mkdir -p /workspace && \
-    chown -R ${USERNAME}:${USERNAME} /workspace && \
+    chown -R ${USER_UID}:${USER_GID} /workspace && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -137,7 +146,8 @@ RUN wget -O systemc-2.3.4.tar.gz https://github.com/accellera-official/systemc/a
         -DCMAKE_INSTALL_PREFIX=/opt/systemc \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CXX_STANDARD=17 && \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     cmake --build build -j"$(nproc)" && \
     cmake --install build && \
     cd / && \
